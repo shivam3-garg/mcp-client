@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: mcp-client-service
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn sample-client:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MCP_SSE_URL
+        sync: false
