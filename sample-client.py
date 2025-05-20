@@ -72,7 +72,7 @@ class MCPClient:
             messages=messages,
             tools=self.available_tools
         )
-
+    
     async def process_openai_response(self, response: Completion, session_id: str) -> str:
         messages = session_memory[session_id]
 
@@ -87,11 +87,15 @@ class MCPClient:
                     print(f"\n[Calling tool {tool_name} with args {tool_args}]...")
                     result = await self.session.call_tool(tool_name, tool_args)
                     print(f"\nTool response: {result}")
-
+                    if result and result.content and isinstance(result.content, list):
+                        first_block = result.content[0]
+                        tool_output_text = getattr(first_block, "text", str(result))
+                    else:
+                        tool_output_text = str(result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": result.content[0].text if result.content else str(result),
+                        "content": tool_output_text,
                     })
 
                 response = await self.call_openai(messages)
