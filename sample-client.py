@@ -115,17 +115,16 @@ class MCPClient:
 # Define FastAPI app
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="MCP Tool Assistant")
+app = FastAPI(title="MCP Tool Assistant")  # ✅ Define app once
 
-# 👇 Add this right after `app = FastAPI(...)`
+# ✅ Add CORS middleware to the same app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 🔒 You can restrict to ["https://buddy-paytm-chat.lovable.app"] for production
+    allow_origins=["*"],  # Or restrict to ["https://buddy-paytm-chat.lovable.app"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app = FastAPI(title="MCP Tool Assistant")
 
 class ChatRequest(BaseModel):
     message: str
