@@ -120,7 +120,7 @@ class MCPClient:
         return self.openai.chat.completions.create(
             model="gpt-4o-mini",
             max_tokens=1000,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
             tools=self.available_tools
         )
     
