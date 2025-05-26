@@ -302,9 +302,14 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
 
         try:
             response_data = response.json()
-            print("📝 [TOCOM API JSON Response]:", json.dumps(response_data, indent=2))
-        except Exception:
+        except Exception as json_error:
+            response_data = None
             print("📝 [TOCOM API Raw Response]:", response.text)
+            print("⚠️ [JSON Decode Error]:", str(json_error))
+        
+        if response_data:
+            print("📝 [TOCOM API JSON Response]:", json.dumps(response_data, indent=2))
+
 
         if response.status_code >= 400:
             print("❌ [TOCOM Delivery Failed] Response above. Check:")
