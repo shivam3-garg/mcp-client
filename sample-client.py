@@ -305,6 +305,7 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
 
             if response.status_code >= 400:
                 print("❌ [TOCOM Delivery Failed] Likely causes:")
+                print("tesint")
                 print("   - Invalid auth credentials")
                 print("   - Wrong wabaNumber")
                 print("   - Malformed message format")
