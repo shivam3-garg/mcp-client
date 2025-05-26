@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+import base64
+import httpx
 
 load_dotenv()  # load environment variables from .env
 
@@ -226,3 +228,62 @@ async def chat(request: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("sample-client:app", host="0.0.0.0", port=8000, reload=True)
+
+@app.post("/tocom-webhook")
+async def handle_whatsapp_webhook(request: Request):
+    try:
+        body = await request.json()
+
+        # Extract the WhatsApp message and sender
+        user_msg = body.get("text", {}).get("body", "")
+        sender_number = body.get("from")  # this becomes session_id
+
+        if not user_msg or not sender_number:
+            return JSONResponse(content={"status": "ignored"})
+
+        print(f"[WhatsApp] Incoming from {sender_number}: {user_msg}")
+
+        reply = await client.process_query(user_msg, sender_number)
+
+        await send_whatsapp_reply(to_number=sender_number, message_text=reply)
+        return JSONResponse(content={"status": "ok"})
+
+    except Exception as e:
+        print("Webhook Error:", str(e))
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+async def send_whatsapp_reply(to_number: str, message_text: str):
+    base_url = os.environ.get("TOCOM_BASE_URL")  # e.g., "http://wa-bsp-sender-tocom-qa-internal.mypaytm.com"
+    waba_number = os.environ.get("TOCOM_WABA_NUMBER")  # your WABA number
+    username = os.environ.get("TOCOM_USERNAME")
+    password = os.environ.get("TOCOM_PASSWORD")
+
+    # Encode credentials for Basic Auth
+    credentials = f"{username}:{password}"
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {encoded_credentials}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "wabaNumber": waba_number,
+        "to": to_number,
+        "type": "Text",
+        "text": {
+            "body": message_text
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{base_url}/whatsappsender/v1/messages/single",
+                headers=headers,
+                json=payload
+            )
+            print("TOCOM reply status:", response.status_code, response.text)
+        except Exception as e:
+            print("Error sending WhatsApp reply:", str(e))
+
