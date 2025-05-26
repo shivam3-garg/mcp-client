@@ -297,24 +297,23 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
                 json=payload
             )
 
-            print(f"📬 [TOCOM API Status]: {response.status_code}")
-            try:
-                print("📝 [TOCOM API Response]:", response.json())
-            except Exception:
-                print("📝 [TOCOM API Raw Response]:", response.text)
+        # ✅ These MUST be outside the inner block, and they will now log
+        print(f"📬 [TOCOM API Status]: {response.status_code}")
 
-            if response.status_code >= 400:
-                print("❌ [TOCOM Delivery Failed] Likely causes:")
-                print("tesint")
-                print("   - Invalid auth credentials")
-                print("   - Wrong wabaNumber")
-                print("   - Malformed message format")
-                print("   - Sender not registered for 2-way")
-            else:
-                print("📤 [Reply Sent] Message successfully delivered to TOCOM API.")
+        try:
+            response_data = response.json()
+            print("📝 [TOCOM API JSON Response]:", json.dumps(response_data, indent=2))
+        except Exception:
+            print("📝 [TOCOM API Raw Response]:", response.text)
+
+        if response.status_code >= 400:
+            print("❌ [TOCOM Delivery Failed] Response above. Check:")
+            print("   - Auth credentials (username/password)")
+            print("   - Correct wabaNumber")
+            print("   - Message body format")
+            print("   - Whether 'to' number is linked to WABA and allowed")
+        else:
+            print("📤 [Reply Sent] Message successfully delivered to TOCOM API.")
 
     except Exception as e:
         print("❌ [TOCOM API Error]:", str(e))
-
-    
-
