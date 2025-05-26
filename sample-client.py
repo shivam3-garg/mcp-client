@@ -295,9 +295,19 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
                 headers=headers,
                 json=payload
             )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{base_url}/whatsappsender/v1/messages/single",
+                headers=headers,
+                json=payload
+        )
             print(f"📬 [TOCOM API Status]: {response.status_code}")
             print(f"📝 [TOCOM API Response]: {response.text}")
+
+            if response.status_code >= 400:
+                print("❌ [TOCOM Delivery Failed]: Please check credentials, WABA number, or payload format.")
+    except Exception as e:
+        print("❌ [TOCOM API Error]:", str(e))
     
-        except Exception as e:
-            print("Error sending WhatsApp reply:", str(e))
 
