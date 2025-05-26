@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 import base64
 import httpx
+import traceback
+
 
 load_dotenv()  # load environment variables from .env
 
@@ -322,3 +324,4 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
 
     except Exception as e:
         print("❌ [TOCOM API Error]:", str(e))
+        traceback.print_exc()
