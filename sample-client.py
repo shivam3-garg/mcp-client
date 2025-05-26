@@ -233,19 +233,26 @@ if __name__ == "__main__":
 async def handle_whatsapp_webhook(request: Request):
     try:
         body = await request.json()
+        print("="*50)
+        print("📥 [Webhook Triggered] Raw Payload from TOCOM:")
+        print(json.dumps(body, indent=2))
+
 
         # Extract the WhatsApp message and sender
         user_msg = body.get("text", {}).get("body", "")
         sender_number = body.get("from")  # this becomes session_id
 
         if not user_msg or not sender_number:
+            print("⚠️ Missing sender number or message body. Skipping processing.")
             return JSONResponse(content={"status": "ignored"})
 
-        print(f"[WhatsApp] Incoming from {sender_number}: {user_msg}")
+        print(f"✅ [Parsed Input] From: {sender_number} | Message: {user_msg}")
 
         reply = await client.process_query(user_msg, sender_number)
+        print(f"🧠 [MCP Response] To: {sender_number} | Reply: {reply}")
 
         await send_whatsapp_reply(to_number=sender_number, message_text=reply)
+        print("📤 [Reply Sent] Message pushed to TOCOM API.")
         return JSONResponse(content={"status": "ok"})
 
     except Exception as e:
@@ -257,6 +264,9 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
     waba_number = os.environ.get("TOCOM_WABA_NUMBER")  # your WABA number
     username = os.environ.get("TOCOM_USERNAME")
     password = os.environ.get("TOCOM_PASSWORD")
+    if not all([base_url, waba_number, username, password]):
+        print("❌ [TOCOM Config Error] Missing environment variables.")
+        return
 
     # Encode credentials for Basic Auth
     credentials = f"{username}:{password}"
@@ -275,6 +285,8 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
             "body": message_text
         }
     }
+    print("🧾 [TOCOM Request Payload]:")
+    print(json.dumps(payload, indent=2))
 
     async with httpx.AsyncClient() as client:
         try:
@@ -283,7 +295,9 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
                 headers=headers,
                 json=payload
             )
-            print("TOCOM reply status:", response.status_code, response.text)
+            print(f"📬 [TOCOM API Status]: {response.status_code}")
+            print(f"📝 [TOCOM API Response]: {response.text}")
+    
         except Exception as e:
             print("Error sending WhatsApp reply:", str(e))
 
