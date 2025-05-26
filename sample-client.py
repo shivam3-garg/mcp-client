@@ -258,17 +258,17 @@ async def handle_whatsapp_webhook(request: Request):
     except Exception as e:
         print("Webhook Error:", str(e))
         return JSONResponse(content={"error": str(e)}, status_code=500)
-    
+
 async def send_whatsapp_reply(to_number: str, message_text: str):
-    base_url = os.environ.get("TOCOM_BASE_URL")  # e.g., "http://wa-bsp-sender-tocom-qa-internal.mypaytm.com"
-    waba_number = os.environ.get("TOCOM_WABA_NUMBER")  # your WABA number
+    base_url = os.environ.get("TOCOM_BASE_URL", "").rstrip("/")
+    waba_number = os.environ.get("TOCOM_WABA_NUMBER")
     username = os.environ.get("TOCOM_USERNAME")
     password = os.environ.get("TOCOM_PASSWORD")
+
     if not all([base_url, waba_number, username, password]):
         print("❌ [TOCOM Config Error] Missing environment variables.")
         return
 
-    # Encode credentials for Basic Auth
     credentials = f"{username}:{password}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
@@ -285,8 +285,10 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
             "body": message_text
         }
     }
+
     print("🧾 [TOCOM Request Payload]:")
     print(json.dumps(payload, indent=2))
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -294,12 +296,24 @@ async def send_whatsapp_reply(to_number: str, message_text: str):
                 headers=headers,
                 json=payload
             )
+
             print(f"📬 [TOCOM API Status]: {response.status_code}")
-            print(f"📝 [TOCOM API Response]: {response.text}")
+            try:
+                print("📝 [TOCOM API Response]:", response.json())
+            except Exception:
+                print("📝 [TOCOM API Raw Response]:", response.text)
 
             if response.status_code >= 400:
-                print("❌ [TOCOM Delivery Failed]: Please check credentials, WABA number, or payload format.")
+                print("❌ [TOCOM Delivery Failed] Likely causes:")
+                print("   - Invalid auth credentials")
+                print("   - Wrong wabaNumber")
+                print("   - Malformed message format")
+                print("   - Sender not registered for 2-way")
+            else:
+                print("📤 [Reply Sent] Message successfully delivered to TOCOM API.")
+
     except Exception as e:
         print("❌ [TOCOM API Error]:", str(e))
+
     
 
