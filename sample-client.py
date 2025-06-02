@@ -5,7 +5,7 @@ from typing import Optional, Dict
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession
-from fastmcp.client import HTTPTransport# ✅ Use HTTP transport for streamable-http
+from fastmcp import Client # ✅ Use HTTP transport for streamable-http
 
 
 from openai import OpenAI
@@ -97,7 +97,7 @@ class MCPClient:
 
     async def connect_to_http_server(self, server_url: str):
         print("Connecting to MCP HTTP server...")
-        self._session_context = ClientSession(transport=HTTPTransport(base_url=server_url))  # ✅ Correct usage
+        self._session_context = Client(server_url)
         self.session = await self._session_context.__aenter__()
 
         await self.session.initialize()
