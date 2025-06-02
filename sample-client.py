@@ -5,7 +5,7 @@ from typing import Optional, Dict
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession
-from mcp.client.http import HTTPTransport  # ✅ Use HTTP transport for streamable-http
+from fastmcp.client import HTTPTransport# ✅ Use HTTP transport for streamable-http
 
 
 from openai import OpenAI
