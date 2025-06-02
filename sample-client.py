@@ -5,7 +5,8 @@ from typing import Optional, Dict
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.http import HTTPTransport  # ✅ Use HTTP transport for streamable-http
+
 
 from openai import OpenAI
 from openai.types import Completion
@@ -91,30 +92,20 @@ Be concise, friendly, and focused. Guide Paytm merchants with speed and clarity.
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
-        self.exit_stack = AsyncExitStack()
         self.openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         self.available_tools = []
 
-    async def connect_to_sse_server(self, server_url: str):
-        print("Connecting to MCP SSE server...")
-        self._streams_context = sse_client(url=server_url)
-        streams = await self._streams_context.__aenter__()
-        print("Streams:", streams)
+    async def connect_to_http_server(self, server_url: str):
+        print("Connecting to MCP HTTP server...")
+        self._session_context = ClientSession(transport=HTTPTransport(base_url=server_url))  # ✅ Correct usage
+        self.session = await self._session_context.__aenter__()
 
-        self._session_context = ClientSession(*streams)
-        self.session: ClientSession = await self._session_context.__aenter__()
-
-        print("Initializing SSE client...")
         await self.session.initialize()
-        print("Initialized SSE client")
-
         await self.get_available_tools()
 
     async def cleanup(self):
         if self._session_context:
             await self._session_context.__aexit__(None, None, None)
-        if self._streams_context:
-            await self._streams_context.__aexit__(None, None, None)
 
     async def get_available_tools(self):
         print("Fetching available server tools...")
@@ -213,7 +204,7 @@ client = MCPClient()
 
 @app.on_event("startup")
 async def startup_event():
-    await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/mcp")
+    await client.connect_to_http_server(server_url="https://payment-ol-mcp.onrender.com/mcp")
 
 @app.on_event("shutdown")
 async def shutdown_event():
