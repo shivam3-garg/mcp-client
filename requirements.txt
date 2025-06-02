@@ -2,4 +2,4 @@ fastapi
 uvicorn
 python-dotenv
 openai
-mcp
+git+https://github.com/paytm/fastmcp.git@main
