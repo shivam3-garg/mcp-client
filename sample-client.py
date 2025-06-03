@@ -42,7 +42,7 @@ class MCPClient:
 
     async def get_available_tools(self):
         print("Fetching available server tools...")
-        tools = await self.session.get_tools()
+        tools = await self.session.list_tools()
         print("Connected to MCP server with tools:", [tool.name for tool in tools])
 
         self.available_tools = [
