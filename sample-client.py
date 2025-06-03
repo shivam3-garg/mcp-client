@@ -213,7 +213,7 @@ client = MCPClient()
 
 @app.on_event("startup")
 async def startup_event():
-    await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/mcp")
+    await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/sse")
 
 @app.on_event("shutdown")
 async def shutdown_event():
