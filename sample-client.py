@@ -99,8 +99,6 @@ class MCPClient:
         print("Connecting to MCP HTTP server...")
         self._session_context = Client(server_url)
         self.session = await self._session_context.__aenter__()
-
-        await self.session.initialize()
         await self.get_available_tools()
 
     async def cleanup(self):
