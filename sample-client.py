@@ -13,13 +13,16 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import base64
 import httpx
 import traceback
+import logging
 
-import logging, traceback
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-logger = logging.getLogger("uvicorn.error")
 load_dotenv()  # load environment variables from .env
 
 # In-memory session store
@@ -96,112 +99,149 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         self.available_tools = []
+        self._streams_context = None
+        self._session_context = None
+        self.connected = False
 
     async def connect_to_sse_server(self, server_url: str):
-        print("Connecting to MCP SSE server...")
-        self._streams_context = sse_client(url=server_url)
-        streams = await self._streams_context.__aenter__()
-        print("Streams:", streams)
+        try:
+            logger.info(f"Connecting to MCP SSE server: {server_url}")
+            self._streams_context = sse_client(url=server_url)
+            streams = await self._streams_context.__aenter__()
+            logger.info(f"Streams established: {streams}")
 
-        self._session_context = ClientSession(*streams)
-        self.session: ClientSession = await self._session_context.__aenter__()
+            self._session_context = ClientSession(*streams)
+            self.session: ClientSession = await self._session_context.__aenter__()
 
-        print("Initializing SSE client...")
-        await self.session.initialize()
-        print("Initialized SSE client")
+            logger.info("Initializing SSE client...")
+            await self.session.initialize()
+            logger.info("SSE client initialized successfully")
 
-        await self.get_available_tools()
+            await self.get_available_tools()
+            self.connected = True
+            logger.info("MCP Client connected successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to MCP server: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
     async def cleanup(self):
-        if self._session_context:
-            await self._session_context.__aexit__(None, None, None)
-        if self._streams_context:
-            await self._streams_context.__aexit__(None, None, None)
+        try:
+            if self._session_context:
+                await self._session_context.__aexit__(None, None, None)
+            if self._streams_context:
+                await self._streams_context.__aexit__(None, None, None)
+            self.connected = False
+            logger.info("MCP Client cleaned up")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
 
     async def get_available_tools(self):
-        print("Fetching available server tools...")
-        response = await self.session.list_tools()
-        print("Connected to MCP server with tools:", [tool.name for tool in response.tools])
+        try:
+            logger.info("Fetching available server tools...")
+            response = await self.session.list_tools()
+            logger.info(f"Connected to MCP server with tools: {[tool.name for tool in response.tools]}")
 
-        self.available_tools = [
-            {
-                "type": 'function',
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.inputSchema,
-                },
-                "strict": True,
-            }
-            for tool in response.tools
-        ]
+            self.available_tools = [
+                {
+                    "type": 'function',
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema,
+                    },
+                    "strict": True,
+                }
+                for tool in response.tools
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get available tools: {str(e)}")
+            raise
 
     async def call_openai(self, messages):
-        return self.openai.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=1000,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-            tools=self.available_tools
-        )
+        try:
+            return self.openai.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=1000,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
+                tools=self.available_tools
+            )
+        except Exception as e:
+            logger.error(f"OpenAI API call failed: {str(e)}")
+            raise
     
     async def process_openai_response(self, response: Completion, session_id: str) -> str:
-        messages = session_memory[session_id]
+        try:
+            messages = session_memory[session_id]
 
-        for choice in response.choices:
-            if choice.finish_reason == "tool_calls":
-                messages.append(choice.message)
+            for choice in response.choices:
+                if choice.finish_reason == "tool_calls":
+                    messages.append(choice.message)
 
-                for tool_call in choice.message.tool_calls:
-                    tool_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
+                    for tool_call in choice.message.tool_calls:
+                        tool_name = tool_call.function.name
+                        tool_args = json.loads(tool_call.function.arguments)
 
-                    print(f"\n[Calling tool {tool_name} with args {tool_args}]...")
-                    result = await self.session.call_tool(tool_name, tool_args)
-                    print(f"\nTool response: {result}")
-                    if result and getattr(result, "content", None) and isinstance(result.content, list):
-                        first_block = result.content[0]
-                        tool_output_text = getattr(first_block, "text", "").strip()
-                    else:
-                        tool_output_text = ""
-                    
-                    if not tool_output_text:
-                        tool_output_text = "Tool executed but no response was returned."
-                    
-                    print(f"[Tool Call ID: {tool_call.id}] Response: {tool_output_text}")
+                        logger.info(f"Calling tool {tool_name} with args {tool_args}")
+                        result = await self.session.call_tool(tool_name, tool_args)
+                        logger.info(f"Tool response: {result}")
+                        
+                        if result and getattr(result, "content", None) and isinstance(result.content, list):
+                            first_block = result.content[0]
+                            tool_output_text = getattr(first_block, "text", "").strip()
+                        else:
+                            tool_output_text = ""
+                        
+                        if not tool_output_text:
+                            tool_output_text = "Tool executed but no response was returned."
+                        
+                        logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_output_text,
-                    })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_output_text,
+                        })
 
-                response = await self.call_openai(messages)
-                return await self.process_openai_response(response, session_id)
+                    response = await self.call_openai(messages)
+                    return await self.process_openai_response(response, session_id)
 
-            elif choice.finish_reason == "stop":
-                print("\nAssistant: " + choice.message.content)
-                messages.append(choice.message)
-                return choice.message.content
+                elif choice.finish_reason == "stop":
+                    logger.info(f"Assistant response: {choice.message.content}")
+                    messages.append(choice.message)
+                    return choice.message.content
 
-        return "Sorry, I couldn't complete that request."
+            return "Sorry, I couldn't complete that request."
+        except Exception as e:
+            logger.error(f"Error processing OpenAI response: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
     async def process_query(self, query: str, session_id: str) -> str:
-        if session_id not in session_memory:
-            session_memory[session_id] = []
+        try:
+            # Check if client is connected
+            if not self.connected:
+                raise Exception("MCP Client is not connected to the server")
+                
+            if session_id not in session_memory:
+                session_memory[session_id] = []
 
-        session_memory[session_id].append({"role": "user", "content": query})
-        response = await self.call_openai(session_memory[session_id])
-        return await self.process_openai_response(response, session_id)
+            session_memory[session_id].append({"role": "user", "content": query})
+            response = await self.call_openai(session_memory[session_id])
+            return await self.process_openai_response(response, session_id)
+        except Exception as e:
+            logger.error(f"Error processing query: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
 # Define FastAPI app
-from fastapi.middleware.cors import CORSMiddleware
+app = FastAPI(title="MCP Tool Assistant")
 
-app = FastAPI(title="MCP Tool Assistant")  # ✅ Define app once
-
-# ✅ Add CORS middleware to the same app
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Or restrict to ["https://buddy-paytm-chat.lovable.app"]
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -211,33 +251,58 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str
 
+# Global client instance
 client = MCPClient()
 
 @app.on_event("startup")
 async def startup_event():
-    await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/sse")
+    try:
+        await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/sse")
+        logger.info("MCP Client startup completed successfully")
+    except Exception as e:
+        logger.error(f"Failed to start MCP Client: {str(e)}")
+        # Don't raise here to allow the server to start even if MCP connection fails
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await client.cleanup()
 
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "mcp_connected": client.connected,
+        "available_tools": len(client.available_tools)
+    }
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     try:
+        # Validate request
+        if not request.message or not request.session_id:
+            return JSONResponse(
+                content={"error": "Message and session_id are required"}, 
+                status_code=400
+            )
+        
+        # Check if MCP client is connected
+        if not client.connected:
+            return JSONResponse(
+                content={"error": "MCP server is not connected. Please try again later."}, 
+                status_code=503
+            )
+        
+        logger.info(f"Processing chat request for session {request.session_id}")
         reply = await client.process_query(request.message, request.session_id)
         return JSONResponse(content={"reply": reply})
+        
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    try:
-        reply = await client.process_query(request.message, request.session_id)
-        return JSONResponse(content={"reply": reply})
-    except Exception as e:
-        # 🔴 NEW: dump traceback to logs
-        logger.error("Unhandled error in /chat\n%s", traceback.format_exc())
-        # also send it back so you can see it in Postman/curl
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        logger.error(f"Unhandled error in /chat: {str(e)}")
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            content={"error": f"Internal server error: {str(e)}"}, 
+            status_code=500
+        )
 
 if __name__ == "__main__":
     import uvicorn
