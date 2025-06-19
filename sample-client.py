@@ -17,7 +17,9 @@ import base64
 import httpx
 import traceback
 
+import logging, traceback
 
+logger = logging.getLogger("uvicorn.error")
 load_dotenv()  # load environment variables from .env
 
 # In-memory session store
@@ -225,6 +227,16 @@ async def chat(request: ChatRequest):
         reply = await client.process_query(request.message, request.session_id)
         return JSONResponse(content={"reply": reply})
     except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+@app.post("/chat")
+async def chat(request: ChatRequest):
+    try:
+        reply = await client.process_query(request.message, request.session_id)
+        return JSONResponse(content={"reply": reply})
+    except Exception as e:
+        # 🔴 NEW: dump traceback to logs
+        logger.error("Unhandled error in /chat\n%s", traceback.format_exc())
+        # also send it back so you can see it in Postman/curl
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
