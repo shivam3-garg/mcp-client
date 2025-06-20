@@ -1,13 +1,10 @@
 import asyncio
 import json
 import os
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict
 from contextlib import AsyncExitStack
 import time
-import re
-import base64
-import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -19,28 +16,22 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import base64
 import httpx
 import traceback
 import logging
-
-# Chart generation imports
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from collections import defaultdict
-import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv()  # load environment variables from .env
 
 # In-memory session store
 session_memory: Dict[str, list] = {}
 
-SYSTEM_PROMPT = """You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, which enables secure access to Paytm's Payments and Business Payments APIs. Your role is to automate payment workflows using the available tools: create_payment_link, fetch_payment_links, fetch_transactions_for_link, initiate_refund, check_refund_status, fetch_refund_list, and fetch_order_list.More actions
+SYSTEM_PROMPT = """
+You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, which enables secure access to Paytm's Payments and Business Payments APIs. Your role is to automate payment workflows using the available tools: create_payment_link, fetch_payment_links, fetch_transactions_for_link, initiate_refund, check_refund_status, fetch_refund_list, and fetch_order_list.
 
 1. Understand the Request:
 - Identify the user's intent and choose the correct tool.
@@ -67,7 +58,7 @@ SYSTEM_PROMPT = """You are a Paytm MCP Assistant, an AI agent powered by the Pay
 - Show clear error messages if a tool fails.
 
 6. Response Formatting:
-- Use clean markdown formatting. 
+- Use clean markdown formatting always.   
 - Example:
   - **Action**: Created payment link
   - **Amount**: ₹50
@@ -103,206 +94,20 @@ SYSTEM_PROMPT = """You are a Paytm MCP Assistant, an AI agent powered by the Pay
 
 Be concise, friendly, and focused. Guide Paytm merchants with speed and clarity.
 
-When users ask for graphs, charts, or visualizations of payment data, first fetch the relevant data using the appropriate tools, then indicate that a chart will be generated.
+CRITICAL GUARDRAILS - STRICTLY ENFORCE:
+You EXCLUSIVELY handle queries related to Paytm payments, refunds, payment links, transactions, orders, payment processing and related payment contenxt
+
+WHAT YOU CANNOT HELP WITH:
+- General programming questions unrelated to payments
+- Personal advice or casual conversations
+- Weather, news, or general knowledge
+- Other services or APIs not related to payments
+- Non-payment related coding help
+- Any topic outside of Paytm payment processing
+
+
+Remember: You are a specialized assistant for Paytm payments only. Stay focused on your domain.If question outside domain is asked tell user respectfully that you can only answer Paytm payments specific.
 """
-
-class ChartGenerator:
-    @staticmethod
-    def extract_payment_data(tool_responses: List[str]) -> List[Dict]:
-        """Extract payment data from tool responses"""
-        all_data = []
-        
-        for response in tool_responses:
-            try:
-                # Try to parse as JSON
-                if response.strip().startswith('{') or response.strip().startswith('['):
-                    data = json.loads(response)
-                    
-                    # Handle different response structures
-                    if isinstance(data, dict):
-                        if 'data' in data and isinstance(data['data'], list):
-                            all_data.extend(data['data'])
-                        elif 'orders' in data and isinstance(data['orders'], list):
-                            all_data.extend(data['orders'])
-                        elif 'transactions' in data and isinstance(data['transactions'], list):
-                            all_data.extend(data['transactions'])
-                        elif 'links' in data and isinstance(data['links'], list):
-                            all_data.extend(data['links'])
-                        else:
-                            all_data.append(data)
-                    elif isinstance(data, list):
-                        all_data.extend(data)
-                        
-            except json.JSONDecodeError:
-                # Try to extract data using regex patterns
-                patterns = [
-                    r'"amount":\s*(\d+\.?\d*)',
-                    r'"created_time":\s*"([^"]+)"',
-                    r'"date":\s*"([^"]+)"',
-                    r'"timestamp":\s*"([^"]+)"'
-                ]
-                
-                amounts = re.findall(patterns[0], response)
-                dates = re.findall(patterns[1], response) or re.findall(patterns[2], response) or re.findall(patterns[3], response)
-                
-                if amounts and dates:
-                    for i, (amount, date) in enumerate(zip(amounts, dates)):
-                        all_data.append({
-                            'amount': float(amount),
-                            'date': date,
-                            'id': f'extracted_{i}'
-                        })
-                        
-        return all_data
-
-    @staticmethod
-    def create_amount_chart(data: List[Dict]) -> str:
-        """Create a chart showing amounts over time"""
-        if not data:
-            return None
-            
-        plt.style.use('default')
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Extract and sort data
-        chart_data = []
-        for item in data:
-            amount = None
-            date = None
-            
-            # Extract amount
-            if 'amount' in item:
-                amount = float(item['amount'])
-            elif 'total_amount' in item:
-                amount = float(item['total_amount'])
-            elif 'paid_amount' in item:
-                amount = float(item['paid_amount'])
-                
-            # Extract date
-            if 'created_time' in item:
-                date = item['created_time']
-            elif 'date' in item:
-                date = item['date']
-            elif 'timestamp' in item:
-                date = item['timestamp']
-                
-            if amount is not None and date:
-                chart_data.append((date, amount))
-        
-        if not chart_data:
-            return None
-            
-        # Sort by date
-        chart_data.sort(key=lambda x: x[0])
-        
-        dates, amounts = zip(*chart_data)
-        
-        # Create the chart
-        ax.plot(dates, amounts, marker='o', linewidth=2, markersize=6, 
-                color='#00BAF2', markerfacecolor='#FF6B35')
-        
-        ax.set_title('Payment Amounts Over Time', fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('Date', fontsize=12)
-        ax.set_ylabel('Amount (₹)', fontsize=12)
-        
-        # Format y-axis for currency
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:.2f}'))
-        
-        # Rotate x-axis labels for better readability
-        plt.xticks(rotation=45)
-        
-        # Add grid
-        ax.grid(True, alpha=0.3)
-        
-        # Adjust layout
-        plt.tight_layout()
-        
-        # Convert to base64
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-        buffer.seek(0)
-        
-        chart_base64 = base64.b64encode(buffer.getvalue()).decode()
-        plt.close(fig)
-        
-        return chart_base64
-
-    @staticmethod
-    def create_summary_chart(data: List[Dict]) -> str:
-        """Create a summary chart (bar chart of daily totals)"""
-        if not data:
-            return None
-            
-        plt.style.use('default')
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Group data by date
-        daily_totals = defaultdict(float)
-        
-        for item in data:
-            amount = None
-            date = None
-            
-            # Extract amount
-            if 'amount' in item:
-                amount = float(item['amount'])
-            elif 'total_amount' in item:
-                amount = float(item['total_amount'])
-            elif 'paid_amount' in item:
-                amount = float(item['paid_amount'])
-                
-            # Extract date
-            if 'created_time' in item:
-                date = item['created_time'][:10]  # Get date part only
-            elif 'date' in item:
-                date = item['date'][:10]
-            elif 'timestamp' in item:
-                date = item['timestamp'][:10]
-                
-            if amount is not None and date:
-                daily_totals[date] += amount
-        
-        if not daily_totals:
-            return None
-            
-        # Sort by date
-        sorted_data = sorted(daily_totals.items())
-        dates, amounts = zip(*sorted_data)
-        
-        # Create bar chart
-        bars = ax.bar(dates, amounts, color='#00BAF2', alpha=0.8, edgecolor='#FF6B35', linewidth=1)
-        
-        # Add value labels on bars
-        for bar, amount in zip(bars, amounts):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + max(amounts)*0.01,
-                   f'₹{amount:.2f}', ha='center', va='bottom', fontsize=10)
-        
-        ax.set_title('Daily Payment Totals', fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('Date', fontsize=12)
-        ax.set_ylabel('Total Amount (₹)', fontsize=12)
-        
-        # Format y-axis for currency
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:.2f}'))
-        
-        # Rotate x-axis labels
-        plt.xticks(rotation=45)
-        
-        # Add grid
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # Adjust layout
-        plt.tight_layout()
-        
-        # Convert to base64
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-        buffer.seek(0)
-        
-        chart_base64 = base64.b64encode(buffer.getvalue()).decode()
-        plt.close(fig)
-        
-        return chart_base64
 
 class MCPClient:
     def __init__(self):
@@ -313,25 +118,25 @@ class MCPClient:
         self._streams_context = None
         self._session_context = None
         self.connected = False
-        self.server_url = ""
-        self.last_connection_time = 0
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 3
-        self.chart_generator = ChartGenerator()
-        self.recent_tool_responses = []  # Store recent tool responses for chart generation
+        self.server_url = "https://payment-ol-mcp.onrender.com/sse"
+        self.last_connection_attempt = None
+        self.connection_retry_delay = 5  # seconds
+        self.max_retries = 3
+        self.connection_lock = asyncio.Lock()
+        self.health_check_interval = 30  # seconds
+        self.last_health_check = None
 
-    async def connect_to_sse_server(self, server_url: str):
-        self.server_url = server_url
-        return await self._connect_with_retry()
-
-    async def _connect_with_retry(self):
-        """Connect with automatic retry logic"""
-        for attempt in range(self.max_reconnect_attempts):
+    async def connect_to_sse_server(self, server_url: str = None):
+        """Connect to SSE server with retry logic"""
+        if server_url:
+            self.server_url = server_url
+            
+        async with self.connection_lock:
             try:
-                logger.info(f"Connecting to MCP SSE server (attempt {attempt + 1}/{self.max_reconnect_attempts}): {self.server_url}")
+                logger.info(f"Connecting to MCP SSE server: {self.server_url}")
                 
-                # Clean up any existing connections
-                await self._cleanup_connection()
+                # Clean up existing connections first
+                await self._cleanup_connections()
                 
                 self._streams_context = sse_client(url=self.server_url)
                 streams = await self._streams_context.__aenter__()
@@ -346,27 +151,19 @@ class MCPClient:
 
                 await self.get_available_tools()
                 self.connected = True
-                self.last_connection_time = time.time()
-                self.reconnect_attempts = 0
+                self.last_connection_attempt = datetime.now()
+                self.last_health_check = datetime.now()
                 logger.info("MCP Client connected successfully")
-                return True
                 
             except Exception as e:
-                logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
-                await self._cleanup_connection()
-                
-                if attempt < self.max_reconnect_attempts - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff
-                    logger.info(f"Waiting {wait_time}s before retry...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error("Max reconnection attempts reached")
-                    raise
+                logger.error(f"Failed to connect to MCP server: {str(e)}")
+                logger.error(traceback.format_exc())
+                self.connected = False
+                await self._cleanup_connections()
+                raise
 
-        return False
-
-    async def _cleanup_connection(self):
-        """Clean up existing connection"""
+    async def _cleanup_connections(self):
+        """Clean up existing connections"""
         try:
             if self._session_context:
                 await self._session_context.__aexit__(None, None, None)
@@ -375,24 +172,62 @@ class MCPClient:
                 await self._streams_context.__aexit__(None, None, None)
                 self._streams_context = None
             self.session = None
-            self.connected = False
         except Exception as e:
             logger.error(f"Error during connection cleanup: {str(e)}")
 
-    async def cleanup(self):
-        await self._cleanup_connection()
-        logger.info("MCP Client cleaned up")
-
-    async def ensure_connected(self):
-        """Ensure we have a valid connection, reconnect if needed"""
+    async def ensure_connection(self):
+        """Ensure connection is healthy, reconnect if necessary"""
         if not self.connected:
-            logger.info("Connection lost, attempting to reconnect...")
-            await self._connect_with_retry()
-        
-        # Check if connection is stale (older than 5 minutes)
-        if time.time() - self.last_connection_time > 300:
-            logger.info("Connection appears stale, refreshing...")
-            await self._connect_with_retry()
+            logger.info("Connection not established, attempting to connect...")
+            await self.connect_with_retry()
+            return
+
+        # Check if we need to perform a health check
+        now = datetime.now()
+        if (self.last_health_check is None or 
+            (now - self.last_health_check).seconds > self.health_check_interval):
+            
+            if not await self.health_check():
+                logger.warning("Health check failed, attempting to reconnect...")
+                await self.connect_with_retry()
+
+    async def health_check(self) -> bool:
+        """Perform a simple health check on the connection"""
+        try:
+            if not self.session:
+                return False
+            
+            # Try to list tools as a health check
+            await self.session.list_tools()
+            self.last_health_check = datetime.now()
+            return True
+        except Exception as e:
+            logger.error(f"Health check failed: {str(e)}")
+            self.connected = False
+            return False
+
+    async def connect_with_retry(self):
+        """Connect with exponential backoff retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                await self.connect_to_sse_server()
+                return
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    delay = self.connection_retry_delay * (2 ** attempt)
+                    logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {delay}s: {str(e)}")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"All {self.max_retries} connection attempts failed")
+                    raise
+
+    async def cleanup(self):
+        try:
+            await self._cleanup_connections()
+            self.connected = False
+            logger.info("MCP Client cleaned up")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
 
     async def get_available_tools(self):
         try:
@@ -428,57 +263,13 @@ class MCPClient:
             logger.error(f"OpenAI API call failed: {str(e)}")
             raise
     
-    async def call_tool_with_retry(self, tool_name: str, tool_args: dict):
-        """Call MCP tool with automatic retry on connection errors"""
-        for attempt in range(2):  # Try twice
-            try:
-                await self.ensure_connected()
-                result = await self.session.call_tool(tool_name, tool_args)
-                return result
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "closed" in error_msg or "connection" in error_msg:
-                    logger.warning(f"Connection error on attempt {attempt + 1}, retrying...")
-                    self.connected = False
-                    if attempt == 0:  # Only retry once
-                        await asyncio.sleep(1)
-                        continue
-                raise e
-
-    def should_generate_chart(self, query: str) -> bool:
-        """Check if the query requests a chart/graph"""
-        chart_keywords = [
-            'graph', 'chart', 'visualiz', 'plot', 'show', 'display',
-            'trend', 'analytics', 'dashboard', 'visual', 'diagram'
-        ]
-        query_lower = query.lower()
-        return any(keyword in query_lower for keyword in chart_keywords)
-
-    def generate_chart_from_data(self, chart_type: str = "line") -> Optional[str]:
-        """Generate chart from recent tool responses"""
-        try:
-            data = self.chart_generator.extract_payment_data(self.recent_tool_responses)
-            if not data:
-                return None
-                
-            if chart_type == "bar" or "daily" in " ".join(self.recent_tool_responses).lower():
-                return self.chart_generator.create_summary_chart(data)
-            else:
-                return self.chart_generator.create_amount_chart(data)
-                
-        except Exception as e:
-            logger.error(f"Error generating chart: {str(e)}")
-            return None
-        
-    async def process_openai_response(self, response: Completion, session_id: str) -> Dict[str, Any]:
+    async def process_openai_response(self, response: Completion, session_id: str) -> str:
         try:
             messages = session_memory[session_id]
-            chart_data = None
 
             for choice in response.choices:
                 if choice.finish_reason == "tool_calls":
                     messages.append(choice.message)
-                    self.recent_tool_responses = []  # Reset for new tool calls
 
                     for tool_call in choice.message.tool_calls:
                         tool_name = tool_call.function.name
@@ -486,18 +277,11 @@ class MCPClient:
 
                         logger.info(f"Calling tool {tool_name} with args {tool_args}")
                         
-                        try:
-                            result = await self.call_tool_with_retry(tool_name, tool_args)
-                            logger.info(f"Tool response: {result}")
-                        except Exception as e:
-                            logger.error(f"Tool call failed after retries: {str(e)}")
-                            tool_output_text = f"Error calling {tool_name}: {str(e)}"
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": tool_output_text,
-                            })
-                            continue
+                        # Ensure connection before tool call
+                        await self.ensure_connection()
+                        
+                        result = await self.session.call_tool(tool_name, tool_args)
+                        logger.info(f"Tool response: {result}")
                         
                         if result and getattr(result, "content", None) and isinstance(result.content, list):
                             first_block = result.content[0]
@@ -507,9 +291,6 @@ class MCPClient:
                         
                         if not tool_output_text:
                             tool_output_text = "Tool executed but no response was returned."
-                        
-                        # Store tool response for potential chart generation
-                        self.recent_tool_responses.append(tool_output_text)
                         
                         logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")
 
@@ -525,32 +306,25 @@ class MCPClient:
                 elif choice.finish_reason == "stop":
                     logger.info(f"Assistant response: {choice.message.content}")
                     messages.append(choice.message)
-                    
-                    # Check if we should generate a chart
-                    if self.recent_tool_responses:
-                        last_user_message = ""
-                        for msg in reversed(messages):
-                            if msg.role == "user":
-                                last_user_message = msg.content
-                                break
-                        
-                        if self.should_generate_chart(last_user_message):
-                            chart_data = self.generate_chart_from_data()
-                    
-                    return {
-                        "reply": choice.message.content,
-                        "chart": chart_data
-                    }
+                    return choice.message.content
 
-            return {"reply": "Sorry, I couldn't complete that request.", "chart": None}
+            return "Sorry, I couldn't complete that request."
         except Exception as e:
             logger.error(f"Error processing OpenAI response: {str(e)}")
             logger.error(traceback.format_exc())
+            # Try to reconnect on tool call failure
+            if "tool" in str(e).lower():
+                logger.info("Tool call failed, attempting to reconnect...")
+                try:
+                    await self.connect_with_retry()
+                except Exception:
+                    pass
             raise
 
-    async def process_query(self, query: str, session_id: str) -> Dict[str, Any]:
+    async def process_query(self, query: str, session_id: str) -> str:
         try:
-            await self.ensure_connected()
+            # Ensure connection is healthy
+            await self.ensure_connection()
                 
             if session_id not in session_memory:
                 session_memory[session_id] = []
@@ -558,16 +332,28 @@ class MCPClient:
             session_memory[session_id].append({"role": "user", "content": query})
             response = await self.call_openai(session_memory[session_id])
             return await self.process_openai_response(response, session_id)
+            
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             logger.error(traceback.format_exc())
-            return {
-                "reply": f"I'm experiencing connection issues with the payment service. Please try again in a moment. Error: {str(e)}",
-                "chart": None
-            }
+            
+            # Try to recover from connection issues
+            if not self.connected or "connection" in str(e).lower():
+                try:
+                    logger.info("Attempting to recover connection...")
+                    await self.connect_with_retry()
+                    # Retry the query once after reconnection
+                    response = await self.call_openai(session_memory[session_id])
+                    return await self.process_openai_response(response, session_id)
+                except Exception as recovery_error:
+                    logger.error(f"Failed to recover connection: {str(recovery_error)}")
+                    return ("I'm experiencing connection issues with the payment server. "
+                           "Please try again in a few moments.")
+            
+            return "I encountered an error processing your request. Please try again."
 
 # Define FastAPI app
-app = FastAPI(title="MCP Tool Assistant with Charts")
+app = FastAPI(title="Paytm MCP Assistant")
 
 # Add CORS middleware
 app.add_middleware(
@@ -582,20 +368,17 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str
 
-class ChatResponse(BaseModel):
-    reply: str
-    chart: Optional[str] = None
-
 # Global client instance
 client = MCPClient()
 
 @app.on_event("startup")
 async def startup_event():
     try:
-        await client.connect_to_sse_server(server_url="https://payment-ol-mcp.onrender.com/sse")
+        await client.connect_with_retry()
         logger.info("MCP Client startup completed successfully")
     except Exception as e:
         logger.error(f"Failed to start MCP Client: {str(e)}")
+        # Don't raise here to allow the server to start even if MCP connection fails
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -603,26 +386,19 @@ async def shutdown_event():
 
 @app.get("/health")
 async def health_check():
+    connection_healthy = await client.health_check() if client.session else False
     return {
-        "status": "healthy",
+        "status": "healthy" if connection_healthy else "degraded",
         "mcp_connected": client.connected,
         "available_tools": len(client.available_tools),
-        "last_connection": client.last_connection_time,
-        "server_url": client.server_url
+        "last_connection_attempt": client.last_connection_attempt.isoformat() if client.last_connection_attempt else None,
+        "last_health_check": client.last_health_check.isoformat() if client.last_health_check else None
     }
 
-@app.post("/reconnect")
-async def force_reconnect():
-    """Force reconnection to MCP server"""
-    try:
-        await client._connect_with_retry()
-        return {"status": "reconnected", "connected": client.connected}
-    except Exception as e:
-        return {"status": "failed", "error": str(e)}
-
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(request: ChatRequest):
     try:
+        # Validate request
         if not request.message or not request.session_id:
             return JSONResponse(
                 content={"error": "Message and session_id are required"}, 
@@ -630,23 +406,40 @@ async def chat(request: ChatRequest):
             )
         
         logger.info(f"Processing chat request for session {request.session_id}")
-        result = await client.process_query(request.message, request.session_id)
         
-        return JSONResponse(content={
-            "reply": result["reply"],
-            "chart": result["chart"]
-        })
+        # Process query with automatic connection recovery
+        reply = await client.process_query(request.message, request.session_id)
+        return JSONResponse(content={"reply": reply})
         
     except Exception as e:
         logger.error(f"Unhandled error in /chat: {str(e)}")
         logger.error(traceback.format_exc())
         return JSONResponse(
-            content={
-                "reply": f"Service temporarily unavailable. Please try again.",
-                "chart": None,
-                "error": str(e)
-            }, 
-            status_code=503
+            content={"error": "I'm experiencing technical difficulties. Please try again in a moment."}, 
+            status_code=500
+        )
+
+@app.get("/connection/status")
+async def connection_status():
+    """Endpoint to check connection status"""
+    return {
+        "connected": client.connected,
+        "server_url": client.server_url,
+        "tools_available": len(client.available_tools),
+        "last_connection": client.last_connection_attempt.isoformat() if client.last_connection_attempt else None
+    }
+
+@app.post("/connection/reconnect")
+async def force_reconnect():
+    """Endpoint to force reconnection"""
+    try:
+        await client.connect_with_retry()
+        return {"status": "reconnected", "connected": client.connected}
+    except Exception as e:
+        logger.error(f"Force reconnect failed: {str(e)}")
+        return JSONResponse(
+            content={"error": "Reconnection failed", "details": str(e)}, 
+            status_code=500
         )
 
 if __name__ == "__main__":
