@@ -530,8 +530,8 @@ class MCPClient:
                     if self.recent_tool_responses:
                         last_user_message = ""
                         for msg in reversed(messages):
-                            if msg.get("role") == "user":
-                                last_user_message = msg.get("content", "")
+                            if msg.role == "user":
+                                last_user_message = msg.content
                                 break
                         
                         if self.should_generate_chart(last_user_message):
