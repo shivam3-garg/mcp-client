@@ -3,4 +3,6 @@ uvicorn
 python-dotenv
 openai
 mcp
+matplotlib==3.7.2
+pandas==2.0.3
 
