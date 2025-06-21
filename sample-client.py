@@ -131,103 +131,6 @@ WHAT YOU CANNOT HELP WITH:
 Remember: You are a specialized assistant for Paytm payments only. Stay focused on your domain.If question outside domain is asked tell user respectfully that you can only answer Paytm payments specific.
 """
 
-def analyze_for_chart_potential(self, response_text: str, user_query: str = "") -> dict:
-    """
-    Enhanced analysis that considers user intent and data structure
-    """
-    import re
-    
-    # Check if user explicitly requested a chart
-    chart_request_keywords = [
-        'graph', 'chart', 'plot', 'visualize', 'draw', 'show.*chart', 
-        'create.*graph', 'display.*chart', 'generate.*graph'
-    ]
-    
-    explicit_chart_request = any(
-        re.search(keyword, user_query, re.IGNORECASE) 
-        for keyword in chart_request_keywords
-    )
-    
-    # Look for structured data markers
-    has_chart_data = '[CHART_DATA]' in response_text
-    
-    # Look for tabular/list data patterns
-    structured_data_patterns = [
-        r'Order ID.*Amount.*Date',
-        r'\d{4}-\d{2}-\d{2}.*₹\d+',
-        r'Date.*Amount',
-        r'Transaction.*Time.*Amount'
-    ]
-    
-    has_structured_data = any(
-        re.search(pattern, response_text, re.IGNORECASE) 
-        for pattern in structured_data_patterns
-    )
-    
-    return {
-        'explicit_request': explicit_chart_request,
-        'has_chart_data': has_chart_data,
-        'has_structured_data': has_structured_data,
-        'should_chart': explicit_chart_request or has_chart_data
-    }
-
-def extract_chart_data(self, response_text: str, user_query: str = "") -> dict:
-    """
-    Extract chart data from CHART_DATA markers or structure response data
-    """
-    import re
-    import json
-    
-    # First, try to extract from CHART_DATA markers
-    chart_data_pattern = r'\[CHART_DATA\](.*?)\[\/CHART_DATA\]'
-    match = re.search(chart_data_pattern, response_text, re.DOTALL)
-    
-    if match:
-        try:
-            return json.loads(match.group(1).strip())
-        except json.JSONDecodeError:
-            logger.error("Failed to parse CHART_DATA JSON")
-    
-    # Fallback to old method for summary data
-    return self.extract_summary_chart_data(response_text)
-
-def enhance_response_with_charts(self, response_text: str, user_query: str = "") -> str:
-    """
-    Enhanced version that handles explicit chart requests
-    """
-    try:
-        analysis = self.analyze_for_chart_potential(response_text, user_query)
-        
-        if not analysis['should_chart']:
-            return response_text
-        
-        chart_data = self.extract_chart_data(response_text, user_query)
-        
-        if not chart_data:
-            # If user explicitly requested chart but no data found
-            if analysis['explicit_request']:
-                return (response_text + 
-                       "\n\n*Note: I couldn't generate a chart from this data. "
-                       "Please try fetching specific numerical data first.*")
-            return response_text
-        
-        # Clean response text (remove CHART_DATA markers)
-        clean_text = re.sub(r'\[CHART_DATA\].*?\[\/CHART_DATA\]', '', 
-                           response_text, flags=re.DOTALL).strip()
-        
-        # Add chart configuration
-        chart_config = f"""
-
-[CHART_CONFIG]
-{json.dumps(chart_data, indent=2)}
-[/CHART_CONFIG]"""
-        
-        return clean_text + chart_config
-        
-    except Exception as e:
-        logger.error(f"Error enhancing response with charts: {str(e)}")
-        return response_text
-
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
@@ -244,7 +147,6 @@ class MCPClient:
         self.connection_lock = asyncio.Lock()
         self.health_check_interval = 30  # seconds
         self.last_health_check = None
-
     async def connect_to_sse_server(self, server_url: str = None):
         """Connect to SSE server with retry logic"""
         if server_url:
@@ -293,6 +195,136 @@ class MCPClient:
             self.session = None
         except Exception as e:
             logger.error(f"Error during connection cleanup: {str(e)}")
+    def analyze_for_chart_potential(self, response_text: str, user_query: str = "") -> dict:
+        """
+        Enhanced analysis that considers user intent and data structure
+        """
+        import re
+        
+        # Check if user explicitly requested a chart
+        chart_request_keywords = [
+            'graph', 'chart', 'plot', 'visualize', 'draw', 'show.*chart', 
+            'create.*graph', 'display.*chart', 'generate.*graph'
+        ]
+        
+        explicit_chart_request = any(
+            re.search(keyword, user_query, re.IGNORECASE) 
+            for keyword in chart_request_keywords
+        )
+        
+        # Look for structured data markers
+        has_chart_data = '[CHART_DATA]' in response_text
+        
+        # Look for tabular/list data patterns
+        structured_data_patterns = [
+            r'Order ID.*Amount.*Date',
+            r'\d{4}-\d{2}-\d{2}.*₹\d+',
+            r'Date.*Amount',
+            r'Transaction.*Time.*Amount'
+        ]
+        
+        has_structured_data = any(
+            re.search(pattern, response_text, re.IGNORECASE) 
+            for pattern in structured_data_patterns
+        )
+        
+        return {
+            'explicit_request': explicit_chart_request,
+            'has_chart_data': has_chart_data,
+            'has_structured_data': has_structured_data,
+            'should_chart': explicit_chart_request or has_chart_data
+        }
+    def extract_summary_chart_data(self, response_text: str) -> dict:
+        """
+        Fallback method for summary data (your original logic)
+        """
+        import re
+        
+        chart_data = {
+            'type': 'bar',
+            'title': 'Data Overview',
+            'rawData': [],
+            'xKey': 'name',
+            'yKey': 'value'
+        }
+        
+        try:
+            # Pattern to match "Label: Number" format
+            label_value_pattern = r'([A-Za-z\s]+):\s*[₹]?\s*(\d+(?:,\d+)*(?:\.\d+)?)'
+            matches = re.findall(label_value_pattern, response_text)
+            
+            if matches:
+                chart_data['rawData'] = [
+                    {
+                        'name': label.strip(),
+                        'value': float(value.replace(',', ''))
+                    }
+                    for label, value in matches
+                ]
+                chart_data['title'] = 'Payment Data Overview'
+                return chart_data
+            
+        except Exception as e:
+            logger.error(f"Error extracting summary chart data: {str(e)}")
+        
+        return None
+
+    def extract_chart_data(self, response_text: str, user_query: str = "") -> dict:
+        """
+        Extract chart data from CHART_DATA markers or structure response data
+        """
+        import re
+        import json
+        
+        # First, try to extract from CHART_DATA markers
+        chart_data_pattern = r'\[CHART_DATA\](.*?)\[\/CHART_DATA\]'
+        match = re.search(chart_data_pattern, response_text, re.DOTALL)
+        
+        if match:
+            try:
+                return json.loads(match.group(1).strip())
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse CHART_DATA JSON: {str(e)}")
+        
+        # Fallback to old method for summary data
+        return self.extract_summary_chart_data(response_text)
+
+    def enhance_response_with_charts(self, response_text: str, user_query: str = "") -> str:
+        """
+        Enhanced version that handles explicit chart requests
+        """
+        try:
+            analysis = self.analyze_for_chart_potential(response_text, user_query)
+            
+            if not analysis['should_chart']:
+                return response_text
+            
+            chart_data = self.extract_chart_data(response_text, user_query)
+            
+            if not chart_data:
+                # If user explicitly requested chart but no data found
+                if analysis['explicit_request']:
+                    return (response_text + 
+                        "\n\n*Note: I couldn't generate a chart from this data. "
+                        "Please try fetching specific numerical data first.*")
+                return response_text
+            
+            # Clean response text (remove CHART_DATA markers)
+            clean_text = re.sub(r'\[CHART_DATA\].*?\[\/CHART_DATA\]', '', 
+                            response_text, flags=re.DOTALL).strip()
+            
+            # Add chart configuration
+            chart_config = f"""
+
+    [CHART_CONFIG]
+    {json.dumps(chart_data, indent=2)}
+    [/CHART_CONFIG]"""
+            
+            return clean_text + chart_config
+            
+        except Exception as e:
+            logger.error(f"Error enhancing response with charts: {str(e)}")
+            return response_text
 
     async def ensure_connection(self):
         """Ensure connection is healthy, reconnect if necessary"""
