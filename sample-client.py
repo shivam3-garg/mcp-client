@@ -106,6 +106,33 @@ def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
         logger.error(f"Chart generation failed: {str(e)}")
         return None
 
+def generate_chart_config(data, chart_type, x_field, y_field, title="Chart"):
+    """Generate chart configuration instead of image"""
+    try:
+        # Convert data to simple format for frontend
+        chart_data = []
+        for item in data:
+            chart_data.append({
+                "x": item.get(x_field, ''),
+                "y": float(item.get(y_field, 0)) if isinstance(item.get(y_field, 0), (int, float, str)) else 0,
+                "label": item.get(x_field, '')
+            })
+        
+        return {
+            "type": chart_type,
+            "data": chart_data,
+            "config": {
+                "title": title,
+                "xLabel": x_field.replace('_', ' ').title(),
+                "yLabel": y_field.replace('_', ' ').title(),
+                "xField": x_field,
+                "yField": y_field
+            }
+        }
+    except Exception as e:
+        logger.error(f"Chart config generation failed: {str(e)}")
+        return None
+
 def should_generate_chart(query, tool_response, session_id=None):
     """Determine if a chart should be generated based on query and response"""
     chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual', 'draw', 'create a chart']
@@ -506,7 +533,6 @@ class MCPClient:
                             tool_output_text = "Tool executed but no response was returned."
 
                         # Check if chart should be generated - find the last user message
-# Check if chart should be generated - find the last user message
                         user_query = ""
                         for msg in reversed(messages):
                             if isinstance(msg, dict) and msg.get('role') == 'user':
@@ -520,24 +546,21 @@ class MCPClient:
                         store_session_data(tool_output_text, session_id)
 
                         # Check if chart should be generated
+# Check if chart should be generated
                         if should_generate_chart(user_query, tool_output_text, session_id):
                             logger.info(f"Generating chart for query: {user_query}")
                             chart_info = extract_chart_data(tool_output_text, user_query, session_id)
                             if chart_info:
-                                chart_base64 = generate_chart(
+                                chart_config = generate_chart_config(
                                     chart_info['data'],
                                     chart_info['chart_type'],
                                     chart_info['x_field'],
                                     chart_info['y_field'],
                                     chart_info['title']
                                 )
-                                if chart_base64:
-                                    tool_output_text += f"\n\n**CHART_DATA:**{chart_base64}"
-                                    logger.info("Chart generated successfully")
-                                else:
-                                    logger.error("Chart generation failed")
-                            else:
-                                logger.error("No chart data extracted")
+                                if chart_config:
+                                    tool_output_text += f"\n\n**CHART_CONFIG:**{json.dumps(chart_config)}"
+                                    logger.info("Chart config generated successfully")
 
                         logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")                        
 
@@ -617,13 +640,17 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    chart: Optional[str] = None
+    chart_config: Optional[dict] = None
 
 def extract_chart_from_response(response_text):
-    """Extract chart data from response if present"""
-    if "**CHART_DATA:**" in response_text:
-        parts = response_text.split("**CHART_DATA:**")
-        return parts[0].strip(), parts[1].strip()
+    """Extract chart config from response if present"""
+    if "**CHART_CONFIG:**" in response_text:
+        parts = response_text.split("**CHART_CONFIG:**")
+        try:
+            chart_config = json.loads(parts[1].strip())
+            return parts[0].strip(), chart_config
+        except json.JSONDecodeError:
+            return response_text, None
     return response_text, None
 
 # Global client instance
@@ -667,10 +694,10 @@ async def chat(request: ChatRequest):
         
         # Process query with automatic connection recovery
         reply = await client.process_query(request.message, request.session_id)
-        text_reply, chart_data = extract_chart_from_response(reply)
+        text_reply, chart_config = extract_chart_from_response(reply)
         response = {"reply": text_reply}
-        if chart_data:
-            response["chart"] = chart_data
+        if chart_config:
+            response["chart_config"] = chart_config
         return JSONResponse(content=response)
         
     except Exception as e:
