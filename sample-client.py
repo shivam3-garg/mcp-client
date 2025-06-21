@@ -42,7 +42,20 @@ session_memory: Dict[str, list] = {}
 plt.style.use('seaborn-v0_8')
 sns.set_palette("husl")
 
-
+def store_session_data(tool_response, session_id):
+    """Store data from tool response for future chart generation"""
+    try:
+        # Parse order data from text format
+        data = parse_order_text_to_json(tool_response)
+        
+        if data:
+            if session_id not in session_chart_data:
+                session_chart_data[session_id] = {}
+            session_chart_data[session_id]['data'] = data
+            session_chart_data[session_id]['timestamp'] = datetime.now()
+            logger.info(f"Stored chart data for session {session_id}: {len(data)} records")
+    except Exception as e:
+        logger.error(f"Error storing session data: {str(e)}")
 
 def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
     """Generate chart from data and return base64 encoded image"""
@@ -50,27 +63,38 @@ def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
         # Convert data to DataFrame
         df = pd.DataFrame(data)
         
-        # Create figure
-        plt.figure(figsize=(10, 6))
+        # Sort by date if x_field is date
+        if 'date' in x_field.lower():
+            df[x_field] = pd.to_datetime(df[x_field])
+            df = df.sort_values(x_field)
+        
+        # Create figure with better styling
+        plt.figure(figsize=(12, 6))
         
         if chart_type.lower() == 'line':
             plt.plot(df[x_field], df[y_field], marker='o', linewidth=2, markersize=6)
         elif chart_type.lower() == 'bar':
-            plt.bar(df[x_field], df[y_field], alpha=0.8)
+            plt.bar(range(len(df)), df[y_field], alpha=0.8)
+            plt.xticks(range(len(df)), df[x_field], rotation=45)
         elif chart_type.lower() == 'pie':
             plt.pie(df[y_field], labels=df[x_field], autopct='%1.1f%%', startangle=90)
         elif chart_type.lower() == 'scatter':
             plt.scatter(df[x_field], df[y_field], alpha=0.7, s=60)
         
-        plt.title(title, fontsize=16, fontweight='bold')
-        plt.xlabel(x_field.replace('_', ' ').title(), fontsize=12)
-        plt.ylabel(y_field.replace('_', ' ').title(), fontsize=12)
-        plt.xticks(rotation=45)
+        plt.title(title, fontsize=16, fontweight='bold', pad=20)
+        
+        if chart_type.lower() != 'pie':
+            plt.xlabel(x_field.replace('_', ' ').title(), fontsize=12)
+            plt.ylabel(y_field.replace('_', ' ').title(), fontsize=12)
+            if chart_type.lower() != 'bar':
+                plt.xticks(rotation=45)
+        
         plt.tight_layout()
+        plt.grid(True, alpha=0.3)
         
         # Convert to base64
         buffer = io.BytesIO()
-        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
+        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight', facecolor='white')
         buffer.seek(0)
         image_base64 = base64.b64encode(buffer.getvalue()).decode()
         plt.close()
@@ -80,43 +104,107 @@ def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
         logger.error(f"Chart generation failed: {str(e)}")
         return None
 
-def should_generate_chart(query, tool_response):
+def should_generate_chart(query, tool_response, session_id=None):
     """Determine if a chart should be generated based on query and response"""
-    chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual']
-    return any(keyword in query.lower() for keyword in chart_keywords) and 'orders' in tool_response.lower()
-
-def extract_chart_data(tool_response, query):
-    """Extract data for chart generation from tool response"""
+    chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual', 'draw']
+    reference_keywords = ['above data', 'previous data', 'that data', 'this data', 'earlier data']
+    
+    has_chart_request = any(keyword in query.lower() for keyword in chart_keywords)
+    has_data_reference = any(keyword in query.lower() for keyword in reference_keywords)
+    has_order_data = 'Order ID:' in tool_response or 'order' in tool_response.lower()
+    has_session_data = session_id and session_id in session_chart_data
+    
+    return has_chart_request and (has_order_data or (has_data_reference and has_session_data))
+def extract_chart_data(tool_response, query, session_id=None):
+    """Extract data for chart generation from tool response or session data"""
     try:
-        # Look for JSON data in response
-        import re
-        json_match = re.search(r'\[.*\]', tool_response, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
+        # Case 1: Parse text format order data
+        data = parse_order_text_to_json(tool_response)
+        
+        # Case 2: Chart request referencing previous data
+        if not data and session_id and session_id in session_chart_data:
+            data = session_chart_data[session_id].get('data', [])
+        
+        if not data:
+            return None
             
-            # Determine chart type and fields based on query
-            chart_type = 'bar'  # default
-            if 'line' in query.lower() or 'trend' in query.lower():
-                chart_type = 'line'
-            elif 'pie' in query.lower():
-                chart_type = 'pie'
+        # Determine chart type and fields based on query
+        chart_type = 'bar'  # default
+        if 'line' in query.lower() or 'trend' in query.lower():
+            chart_type = 'line'
+        elif 'pie' in query.lower():
+            chart_type = 'pie'
+        elif 'scatter' in query.lower():
+            chart_type = 'scatter'
             
-            # Common field mappings
-            x_field = 'date' if 'date' in str(data[0]).lower() else list(data[0].keys())[0]
-            y_field = 'amount' if 'amount' in str(data[0]).lower() else list(data[0].keys())[1]
-            
-            return {
-                'data': data,
-                'chart_type': chart_type,
-                'x_field': x_field,
-                'y_field': y_field,
-                'title': f'{y_field.title()} vs {x_field.title()}'
-            }
+        # Smart field detection
+        x_field, y_field = detect_chart_fields(data, query)
+        
+        return {
+            'data': data,
+            'chart_type': chart_type,
+            'x_field': x_field,
+            'y_field': y_field,
+            'title': f'{y_field.replace("_", " ").title()} vs {x_field.replace("_", " ").title()}'
+        }
     except Exception as e:
         logger.error(f"Error extracting chart data: {str(e)}")
     return None
 
-
+def parse_order_text_to_json(text_response):
+    """Parse the text format order response into JSON array"""
+    try:
+        import re
+        from datetime import datetime
+        
+        orders = []
+        # Split by the separator line
+        order_blocks = text_response.split('--------------------------------------------------')
+        
+        for block in order_blocks:
+            if 'Order ID:' not in block:
+                continue
+                
+            order = {}
+            
+            # Extract Order ID
+            order_id_match = re.search(r'Order ID:\s*(\S+)', block)
+            if order_id_match:
+                order['order_id'] = order_id_match.group(1)
+            
+            # Extract Amount (remove ₹ symbol and convert to float)
+            amount_match = re.search(r'Amount:\s*₹?([0-9.]+)', block)
+            if amount_match:
+                order['amount'] = float(amount_match.group(1))
+            
+            # Extract Created Time and convert to date
+            created_match = re.search(r'Created Time:\s*([0-9-]+ [0-9:]+)', block)
+            if created_match:
+                try:
+                    dt = datetime.strptime(created_match.group(1), '%Y-%m-%d %H:%M:%S')
+                    order['date'] = dt.strftime('%Y-%m-%d')
+                    order['created_time'] = created_match.group(1)
+                except:
+                    order['date'] = created_match.group(1).split(' ')[0]
+            
+            # Extract other fields
+            status_match = re.search(r'Status:\s*(\S+)', block)
+            if status_match:
+                order['status'] = status_match.group(1)
+                
+            payment_mode_match = re.search(r'Payment Mode:\s*([^\n]+)', block)
+            if payment_mode_match:
+                order['payment_mode'] = payment_mode_match.group(1).strip()
+            
+            if order:  # Only add if we extracted some data
+                orders.append(order)
+        
+        logger.info(f"Parsed {len(orders)} orders from text response")
+        return orders
+        
+    except Exception as e:
+        logger.error(f"Error parsing order text: {str(e)}")
+        return []
 
 SYSTEM_PROMPT = """
 You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, which enables secure access to Paytm's Payments and Business Payments APIs. Your role is to automate payment workflows using the available tools: create_payment_link, fetch_payment_links, fetch_transactions_for_link, initiate_refund, check_refund_status, fetch_refund_list, and fetch_order_list.
@@ -387,8 +475,15 @@ class MCPClient:
                         if not tool_output_text:
                             tool_output_text = "Tool executed but no response was returned."
 
-                        # Check if chart should be generated
-                        user_query = messages[-2]['content'] if len(messages) >= 2 else ""
+                        # Check if chart should be generated - find the last user message
+                        user_query = ""
+                        for msg in reversed(messages):
+                            if isinstance(msg, dict) and msg.get('role') == 'user':
+                                user_query = msg.get('content', '')
+                                break
+                            elif hasattr(msg, 'role') and msg.role == 'user':
+                                user_query = msg.content
+                                break
                         chart_data = None
                         if should_generate_chart(user_query, tool_output_text):
                             chart_info = extract_chart_data(tool_output_text, user_query)
