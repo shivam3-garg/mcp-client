@@ -6,4 +6,4 @@ mcp
 matplotlib==3.7.2
 pandas==2.0.3
 numpy<2.0.0
-
+seaborn==0.12.2

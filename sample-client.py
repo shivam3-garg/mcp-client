@@ -20,6 +20,14 @@ import base64
 import httpx
 import traceback
 import logging
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
+import matplotlib.pyplot as plt
+import pandas as pd
+import io
+import base64
+from matplotlib.dates import DateFormatter
+import seaborn as sns
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +37,86 @@ load_dotenv()  # load environment variables from .env
 
 # In-memory session store
 session_memory: Dict[str, list] = {}
+
+# Set style for better looking charts
+plt.style.use('seaborn-v0_8')
+sns.set_palette("husl")
+
+
+
+def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
+    """Generate chart from data and return base64 encoded image"""
+    try:
+        # Convert data to DataFrame
+        df = pd.DataFrame(data)
+        
+        # Create figure
+        plt.figure(figsize=(10, 6))
+        
+        if chart_type.lower() == 'line':
+            plt.plot(df[x_field], df[y_field], marker='o', linewidth=2, markersize=6)
+        elif chart_type.lower() == 'bar':
+            plt.bar(df[x_field], df[y_field], alpha=0.8)
+        elif chart_type.lower() == 'pie':
+            plt.pie(df[y_field], labels=df[x_field], autopct='%1.1f%%', startangle=90)
+        elif chart_type.lower() == 'scatter':
+            plt.scatter(df[x_field], df[y_field], alpha=0.7, s=60)
+        
+        plt.title(title, fontsize=16, fontweight='bold')
+        plt.xlabel(x_field.replace('_', ' ').title(), fontsize=12)
+        plt.ylabel(y_field.replace('_', ' ').title(), fontsize=12)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
+        buffer.seek(0)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode()
+        plt.close()
+        
+        return image_base64
+    except Exception as e:
+        logger.error(f"Chart generation failed: {str(e)}")
+        return None
+
+def should_generate_chart(query, tool_response):
+    """Determine if a chart should be generated based on query and response"""
+    chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual']
+    return any(keyword in query.lower() for keyword in chart_keywords) and 'orders' in tool_response.lower()
+
+def extract_chart_data(tool_response, query):
+    """Extract data for chart generation from tool response"""
+    try:
+        # Look for JSON data in response
+        import re
+        json_match = re.search(r'\[.*\]', tool_response, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            
+            # Determine chart type and fields based on query
+            chart_type = 'bar'  # default
+            if 'line' in query.lower() or 'trend' in query.lower():
+                chart_type = 'line'
+            elif 'pie' in query.lower():
+                chart_type = 'pie'
+            
+            # Common field mappings
+            x_field = 'date' if 'date' in str(data[0]).lower() else list(data[0].keys())[0]
+            y_field = 'amount' if 'amount' in str(data[0]).lower() else list(data[0].keys())[1]
+            
+            return {
+                'data': data,
+                'chart_type': chart_type,
+                'x_field': x_field,
+                'y_field': y_field,
+                'title': f'{y_field.title()} vs {x_field.title()}'
+            }
+    except Exception as e:
+        logger.error(f"Error extracting chart data: {str(e)}")
+    return None
+
+
 
 SYSTEM_PROMPT = """
 You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, which enables secure access to Paytm's Payments and Business Payments APIs. Your role is to automate payment workflows using the available tools: create_payment_link, fetch_payment_links, fetch_transactions_for_link, initiate_refund, check_refund_status, fetch_refund_list, and fetch_order_list.
@@ -69,21 +157,28 @@ You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, whic
 - If an error occurs, explain it simply and guide the user with next steps.
 - For lists (e.g., multiple orders or refunds), display them as a markdown table with proper headers and columns.
 
-7. Maintain Context:
+7. Chart Generation:
+- When users request charts, graphs, plots, or visualizations, automatically generate visual representations of the data.
+- Supported chart types: line, bar, pie, scatter.
+- Common requests: "show chart of orders", "plot sales trends", "visualize refund amounts", etc.
+- Always provide both tabular data and visual chart when visualization is requested.
+- Charts work best with numerical data from orders, refunds, and transaction amounts.
+
+8. Maintain Context:
 - Use prior messages to infer missing info.
 - Remember recent link IDs, recipient names, etc., for follow-up questions.
 
-8. Multi-Step or Chained Requests:
+9. Multi-Step or Chained Requests:
 - If user intent requires multiple tools (e.g., refund + status check), sequence tool calls accordingly.
 - Make it clear to the user what’s happening, and confirm each step before proceeding.
 
-9. Language Matching:
+10. Language Matching:
 - For **each user message**, detect the language used (e.g., Hindi, English, Hinglish).
 - Respond in **that same language**, regardless of what language was used earlier in the session.
 - his ensures users can switch freely between languages (e.g., start in English, switch to Hindi, and back).
 - Maintain clarity and formatting (bullets, markdown, labels) regardless of the language used.
 
-10. Date Parameters:
+11. Date Parameters:
 - Never invent or guess `from_date` or `to_date`.
 - If user says "last 5 days", "last 10 days", "past week", etc.:
     → Use `time_range` (e.g., `time_range = 5`) and **do not pass** `from_date` or `to_date`.
@@ -291,8 +386,24 @@ class MCPClient:
                         
                         if not tool_output_text:
                             tool_output_text = "Tool executed but no response was returned."
-                        
-                        logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")
+
+                        # Check if chart should be generated
+                        user_query = messages[-2]['content'] if len(messages) >= 2 else ""
+                        chart_data = None
+                        if should_generate_chart(user_query, tool_output_text):
+                            chart_info = extract_chart_data(tool_output_text, user_query)
+                            if chart_info:
+                                chart_base64 = generate_chart(
+                                    chart_info['data'],
+                                    chart_info['chart_type'],
+                                    chart_info['x_field'],
+                                    chart_info['y_field'],
+                                    chart_info['title']
+                                )
+                                if chart_base64:
+                                    tool_output_text += f"\n\n**CHART_DATA:**{chart_base64}"
+
+                        logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")                        
 
                         messages.append({
                             "role": "tool",
@@ -368,6 +479,17 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str
 
+class ChatResponse(BaseModel):
+    reply: str
+    chart: Optional[str] = None
+
+def extract_chart_from_response(response_text):
+    """Extract chart data from response if present"""
+    if "**CHART_DATA:**" in response_text:
+        parts = response_text.split("**CHART_DATA:**")
+        return parts[0].strip(), parts[1].strip()
+    return response_text, None
+
 # Global client instance
 client = MCPClient()
 
@@ -409,7 +531,11 @@ async def chat(request: ChatRequest):
         
         # Process query with automatic connection recovery
         reply = await client.process_query(request.message, request.session_id)
-        return JSONResponse(content={"reply": reply})
+        text_reply, chart_data = extract_chart_from_response(reply)
+        response = {"reply": text_reply}
+        if chart_data:
+            response["chart"] = chart_data
+        return JSONResponse(content=response)
         
     except Exception as e:
         logger.error(f"Unhandled error in /chat: {str(e)}")
