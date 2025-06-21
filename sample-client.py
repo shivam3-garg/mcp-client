@@ -37,6 +37,8 @@ load_dotenv()  # load environment variables from .env
 
 # In-memory session store
 session_memory: Dict[str, list] = {}
+session_chart_data: Dict[str, dict] = {}
+
 
 # Set style for better looking charts
 plt.style.use('seaborn-v0_8')
@@ -106,7 +108,7 @@ def generate_chart(data, chart_type, x_field, y_field, title="Chart"):
 
 def should_generate_chart(query, tool_response, session_id=None):
     """Determine if a chart should be generated based on query and response"""
-    chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual', 'draw']
+    chart_keywords = ['chart', 'graph', 'plot', 'visualize', 'show trends', 'visual', 'draw', 'create a chart']
     reference_keywords = ['above data', 'previous data', 'that data', 'this data', 'earlier data']
     
     has_chart_request = any(keyword in query.lower() for keyword in chart_keywords)
@@ -114,7 +116,35 @@ def should_generate_chart(query, tool_response, session_id=None):
     has_order_data = 'Order ID:' in tool_response or 'order' in tool_response.lower()
     has_session_data = session_id and session_id in session_chart_data
     
+    # Debug logging
+    logger.info(f"Chart check - Query: '{query}', Has chart request: {has_chart_request}, Has order data: {has_order_data}")
+    
     return has_chart_request and (has_order_data or (has_data_reference and has_session_data))
+
+def detect_chart_fields(data, query):
+    """Detect appropriate fields for chart based on data and query"""
+    if not data:
+        return 'date', 'amount'
+    
+    # Get available fields
+    fields = list(data[0].keys()) if data else []
+    
+    # Default fields
+    x_field = 'date'
+    y_field = 'amount'
+    
+    # Look for date field
+    date_fields = [f for f in fields if 'date' in f.lower() or 'time' in f.lower()]
+    if date_fields:
+        x_field = date_fields[0]
+    
+    # Look for amount field
+    amount_fields = [f for f in fields if 'amount' in f.lower() or 'value' in f.lower() or 'total' in f.lower()]
+    if amount_fields:
+        y_field = amount_fields[0]
+    
+    return x_field, y_field
+
 def extract_chart_data(tool_response, query, session_id=None):
     """Extract data for chart generation from tool response or session data"""
     try:
@@ -476,6 +506,7 @@ class MCPClient:
                             tool_output_text = "Tool executed but no response was returned."
 
                         # Check if chart should be generated - find the last user message
+# Check if chart should be generated - find the last user message
                         user_query = ""
                         for msg in reversed(messages):
                             if isinstance(msg, dict) and msg.get('role') == 'user':
@@ -484,9 +515,14 @@ class MCPClient:
                             elif hasattr(msg, 'role') and msg.role == 'user':
                                 user_query = msg.content
                                 break
-                        chart_data = None
-                        if should_generate_chart(user_query, tool_output_text):
-                            chart_info = extract_chart_data(tool_output_text, user_query)
+                        
+                        # Store data for future chart generation
+                        store_session_data(tool_output_text, session_id)
+
+                        # Check if chart should be generated
+                        if should_generate_chart(user_query, tool_output_text, session_id):
+                            logger.info(f"Generating chart for query: {user_query}")
+                            chart_info = extract_chart_data(tool_output_text, user_query, session_id)
                             if chart_info:
                                 chart_base64 = generate_chart(
                                     chart_info['data'],
@@ -497,6 +533,11 @@ class MCPClient:
                                 )
                                 if chart_base64:
                                     tool_output_text += f"\n\n**CHART_DATA:**{chart_base64}"
+                                    logger.info("Chart generated successfully")
+                                else:
+                                    logger.error("Chart generation failed")
+                            else:
+                                logger.error("No chart data extracted")
 
                         logger.info(f"Tool Call ID: {tool_call.id}, Response: {tool_output_text}")                        
 
