@@ -215,46 +215,64 @@ def parse_order_text_to_json(text_response):
         from datetime import datetime
         
         orders = []
-        # Split by the separator line
-        order_blocks = text_response.split('--------------------------------------------------')
         
-        for block in order_blocks:
-            if 'Order ID:' not in block:
-                continue
+        # Check if it's tabular format (with | separators)
+        if '|' in text_response and 'Order ID' in text_response:
+            lines = text_response.split('\n')
+            # Find data lines (start with | but not header separators |---)
+            data_lines = [line for line in lines if line.strip().startswith('|') and not line.strip().startswith('|-')]
+            
+            # Skip header row, process data rows
+            for line in data_lines[1:]:  
+                parts = [part.strip() for part in line.split('|') if part.strip()]
+                if len(parts) >= 4:
+                    try:
+                        order = {
+                            'order_id': parts[0],
+                            'transaction_id': parts[1],
+                            'amount': float(parts[2].replace('₹', '')),
+                            'created_time': parts[3]
+                        }
+                        
+                        # Extract date from created_time
+                        try:
+                            dt = datetime.strptime(parts[3], '%Y-%m-%d %H:%M:%S')
+                            order['date'] = dt.strftime('%Y-%m-%d')
+                        except:
+                            order['date'] = parts[3].split(' ')[0]
+                        
+                        orders.append(order)
+                    except (ValueError, IndexError):
+                        continue
+        
+        # Keep existing block format parsing as fallback
+        elif 'Order ID:' in text_response:
+            order_blocks = text_response.split('--------------------------------------------------')
+            for block in order_blocks:
+                if 'Order ID:' not in block:
+                    continue
+                    
+                order = {}
                 
-            order = {}
-            
-            # Extract Order ID
-            order_id_match = re.search(r'Order ID:\s*(\S+)', block)
-            if order_id_match:
-                order['order_id'] = order_id_match.group(1)
-            
-            # Extract Amount (remove ₹ symbol and convert to float)
-            amount_match = re.search(r'Amount:\s*₹?([0-9.]+)', block)
-            if amount_match:
-                order['amount'] = float(amount_match.group(1))
-            
-            # Extract Created Time and convert to date
-            created_match = re.search(r'Created Time:\s*([0-9-]+ [0-9:]+)', block)
-            if created_match:
-                try:
-                    dt = datetime.strptime(created_match.group(1), '%Y-%m-%d %H:%M:%S')
-                    order['date'] = dt.strftime('%Y-%m-%d')
-                    order['created_time'] = created_match.group(1)
-                except:
-                    order['date'] = created_match.group(1).split(' ')[0]
-            
-            # Extract other fields
-            status_match = re.search(r'Status:\s*(\S+)', block)
-            if status_match:
-                order['status'] = status_match.group(1)
+                order_id_match = re.search(r'Order ID:\s*(\S+)', block)
+                if order_id_match:
+                    order['order_id'] = order_id_match.group(1)
                 
-            payment_mode_match = re.search(r'Payment Mode:\s*([^\n]+)', block)
-            if payment_mode_match:
-                order['payment_mode'] = payment_mode_match.group(1).strip()
-            
-            if order:  # Only add if we extracted some data
-                orders.append(order)
+                amount_match = re.search(r'Amount:\s*₹?([0-9.]+)', block)
+                if amount_match:
+                    order['amount'] = float(amount_match.group(1))
+                
+                created_match = re.search(r'Created Time:\s*([0-9-]+ [0-9:]+)', block)
+                if created_match:
+                    try:
+                        dt = datetime.strptime(created_match.group(1), '%Y-%m-%d %H:%M:%S')
+                        order['date'] = dt.strftime('%Y-%m-%d')
+                        order['created_time'] = created_match.group(1)
+                    except:
+                        order['date'] = created_match.group(1).split(' ')[0]
+                
+                if order:
+                    orders.append(order)
         
         logger.info(f"Parsed {len(orders)} orders from text response")
         return orders
@@ -302,12 +320,13 @@ You are a Paytm MCP Assistant, an AI agent powered by the Paytm MCP Server, whic
 - If an error occurs, explain it simply and guide the user with next steps.
 - For lists (e.g., multiple orders or refunds), display them as a markdown table with proper headers and columns.
 
-7. Chart Generation:
-- When users request charts, graphs, plots, or visualizations, automatically generate visual representations of the data.
-- Supported chart types: line, bar, pie, scatter.
-- Common requests: "show chart of orders", "plot sales trends", "visualize refund amounts", etc.
-- Always provide both tabular data and visual chart when visualization is requested.
-- Charts work best with numerical data from orders, refunds, and transaction amounts.
+7. When users request charts or visualizations of payment data, the system will automatically generate chart configurations that the frontend will render
+ For chart requests, focus on explaining the data being visualized rather than the chart generation process
+ Supported chart types include: line charts (for trends over time), bar charts (for comparisons), pie charts (for distributions), and scatter plots When presenting order/transaction data, organize it clearly in tables when appropriate
+ Chart Generation:
+- When users request charts (using keywords like "chart", "graph", "plot", "visualize"), the system automatically generates chart configurations
+- You don't need to mention chart generation details - just focus on the data analysis
+- Supported visualizations: amount vs date trends, payment mode distributions, status breakdowns, etc.
 
 8. Maintain Context:
 - Use prior messages to infer missing info.
